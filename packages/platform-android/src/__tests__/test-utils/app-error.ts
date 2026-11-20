@@ -9,6 +9,10 @@ type ExpectedAppError = {
   reason?: string;
   /** The `details.dispatched` disclosure the producer must have proven. */
   dispatched?: 'no' | 'unknown';
+  /** The `details.appPackage` a permission refusal names. */
+  appPackage?: string;
+  /** The `details.permissions` ids a named permission refusal names. */
+  permissions?: readonly string[];
 };
 
 /** Keys the assertion on the machine-readable refusal facts rather than on `message` prose. */
@@ -22,6 +26,12 @@ function assertExpectedErrorDetails(error: AppError, expected: ExpectedAppError)
   }
   if (expected.dispatched !== undefined) {
     assert.equal(error.details?.dispatched, expected.dispatched);
+  }
+  if (expected.appPackage !== undefined) {
+    assert.equal(error.details?.appPackage, expected.appPackage);
+  }
+  if (expected.permissions !== undefined) {
+    assert.deepEqual(error.details?.permissions, expected.permissions);
   }
 }
 

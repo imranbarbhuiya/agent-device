@@ -7,7 +7,6 @@ import {
   setAndroidPermission,
 } from '../settings-permission.ts';
 import { ANDROID_EMULATOR } from './test-utils/device-fixtures.ts';
-import { AppError } from '@agent-device/kernel/errors';
 import { assertRejectsAppError } from './test-utils/app-error.ts';
 import { withFakeAdb } from './test-utils/fake-adb.ts';
 import type { DeviceInfo } from '@agent-device/kernel/device';
@@ -780,7 +779,7 @@ test.each([
           setPermission(device, 'grant', 'com.example.app', {
             permissionTarget: 'all',
           }),
-        { code: 'COMMAND_FAILED', message: /declared permissions|requested permissions/i },
+        { code: 'COMMAND_FAILED', appPackage: 'com.example.app' },
       );
       assert.ok(
         calls.every((args) => !args.includes('pm')),
@@ -832,28 +831,74 @@ test.each(['grant', 'deny', 'reset'] as const)(
 );
 
 // A named target on that package fails before any pm call, as it does when the
-// app declares other ids.
-test('setAndroidPermission grant camera on a package that declares nothing fails before pm', async () => {
+// app declares other ids: a grant, and a revoke or reset through the declared read.
+test.each(['grant', 'deny', 'reset'] as const)(
+  'setAndroidPermission %s camera on a package that declares nothing fails before pm',
+  async (action) => {
+    await withFakeAdb(
+      fakeAdb((flat) => {
+        if (flat === CURRENT_USER) return '0';
+        if (flat === DUMPSYS) return NO_PERMISSIONS_DUMP;
+        return { stderr: `unexpected args: ${flat}`, exitCode: 1 };
+      }),
+      async ({ calls, device }) => {
+        await assertRejectsAppError(
+          () => setPermission(device, action, 'com.example.app', { permissionTarget: 'camera' }),
+          {
+            code: 'COMMAND_FAILED',
+            appPackage: 'com.example.app',
+            permissions: ['android.permission.CAMERA'],
+          },
+        );
+        assert.ok(
+          calls.every((args) => !args.includes('pm')),
+          calls.map((args) => args.join(' ')).join('; '),
+        );
+      },
+    );
+  },
+);
+
+// A package that declares only install permissions still has its requested
+// section (API 36 prints one for every non-empty list), so `all` reads it and
+// skips each id `pm` cannot change, rather than taking the declares-nothing path.
+test('setAndroidPermission grant all on an install-only package skips its ids', async () => {
   await withFakeAdb(
     fakeAdb((flat) => {
       if (flat === CURRENT_USER) return '0';
-      if (flat === DUMPSYS) return NO_PERMISSIONS_DUMP;
+      if (flat === DUMPSYS) {
+        return [
+          'Packages:',
+          '  Package [com.example.app] (abc):',
+          '    requested permissions:',
+          '      android.permission.INTERNET',
+          '    install permissions:',
+          '      android.permission.INTERNET: granted=true',
+          '    User 0: ceDataInode=0 installed=true',
+          '      runtime permissions:',
+          'Queries:',
+        ].join('\n');
+      }
+      if (flat === 'shell pm grant --user 0 com.example.app android.permission.INTERNET') {
+        return {
+          stderr:
+            "Exception occurred while executing 'grant':\njava.lang.SecurityException: INTERNET is not a changeable permission type",
+          exitCode: 1,
+        };
+      }
       return { stderr: `unexpected args: ${flat}`, exitCode: 1 };
     }),
-    async ({ calls, device }) => {
-      await assert.rejects(
-        () => setPermission(device, 'grant', 'com.example.app', { permissionTarget: 'camera' }),
-        (error: unknown) => {
-          assert.ok(error instanceof AppError);
-          assert.equal(error.code, 'COMMAND_FAILED');
-          assert.deepEqual(error.details?.permissions, ['android.permission.CAMERA']);
-          return true;
-        },
-      );
-      assert.ok(
-        calls.every((args) => !args.includes('pm')),
-        calls.map((args) => args.join(' ')).join('; '),
-      );
+    async ({ device }) => {
+      const result = await setPermission(device, 'grant', 'com.example.app', {
+        permissionTarget: 'all',
+      });
+      assert.deepEqual(result, {
+        permission: 'all',
+        permissions: [],
+        warnings: [
+          "Skipped android.permission.INTERNET for com.example.app: Exception occurred while executing 'grant': java.lang.SecurityException: INTERNET is not a changeable permission type",
+        ],
+      });
     },
   );
 });

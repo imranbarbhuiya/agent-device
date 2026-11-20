@@ -23,7 +23,8 @@ export type AndroidRuntimePermissionGrants = ReadonlyMap<string, 'granted' | 'no
  * The one `dumpsys package` read every permission path shares: the declared ids and `userId`'s
  * runtime grants. A failed read answers with both halves undefined instead of throwing, and each
  * caller applies its own policy: `all` refuses, named targets fall back to their fixed ids with
- * `unknown` prior grants.
+ * `unknown` prior grants. A package the dump shows declaring nothing answers an empty declared
+ * list: `all` then changes nothing, and a named target refuses before any `pm` call.
  *
  * The caller passes the user its mutation will target, so the two halves cannot disagree.
  * `dumpsys package` prints an `install permissions:` section and one block per user, all
