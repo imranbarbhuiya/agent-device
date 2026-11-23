@@ -1,4 +1,5 @@
 import type { AndroidObservationAdapter } from '@agent-device/contracts/android-observation';
+import { Deadline, sleep } from '@agent-device/host-kit/retry';
 import { AppError } from '@agent-device/kernel/errors';
 import { isActiveProviderDevice } from '../core/provider-device-admission.ts';
 import type { SessionState } from '../core/session-state.ts';
@@ -11,9 +12,17 @@ export type AndroidEscapeSurface = {
   permissionDialog?: boolean;
 };
 
+const FOCUS_CHANGE_POLL_MS = 50;
+
+/**
+ * With `focusChangeWaitMs`, a read that finds the session app still focused is repeated until
+ * another package owns the focus or the wait runs out, so a focus change already under way when
+ * the read starts is seen.
+ */
 export async function detectAndroidEscapeSurface(
   session: SessionState,
   observation?: AndroidObservationAdapter,
+  options: Readonly<{ focusChangeWaitMs?: number }> = {},
 ): Promise<AndroidEscapeSurface | null> {
   if (
     session.device.platform !== 'android' ||
@@ -31,7 +40,16 @@ export async function detectAndroidEscapeSurface(
     );
   }
 
-  if (await observation.readAppFocus(session.device, session.appBundleId)) return null;
+  if (
+    await sessionAppKeepsFocus(
+      observation,
+      session.device,
+      session.appBundleId,
+      options.focusChangeWaitMs ?? 0,
+    )
+  ) {
+    return null;
+  }
   const foreground = await observation.readAppState(session.device);
   const foregroundPackage = foreground.package?.trim();
   if (!foregroundPackage || foregroundPackage === session.appBundleId) return null;
@@ -45,6 +63,20 @@ export async function detectAndroidEscapeSurface(
     hint: buildAndroidEscapeHint(permissionDialog),
     ...(permissionDialog ? { permissionDialog: true } : {}),
   };
+}
+
+async function sessionAppKeepsFocus(
+  observation: AndroidObservationAdapter,
+  device: SessionState['device'],
+  appBundleId: string,
+  waitMs: number,
+): Promise<boolean> {
+  const deadline = Deadline.fromTimeoutMs(waitMs);
+  while (await observation.readAppFocus(device, appBundleId)) {
+    if (deadline.isExpired()) return true;
+    await sleep(Math.min(FOCUS_CHANGE_POLL_MS, deadline.remainingMs()));
+  }
+  return false;
 }
 
 export function describeAndroidEscapeSurface(surface: AndroidEscapeSurface): string {

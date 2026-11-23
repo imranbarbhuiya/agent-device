@@ -29,7 +29,12 @@ export async function assertAndroidPressStayedInApp(
   ) {
     return undefined;
   }
-  const surface = await detectAndroidEscapeSurface(session, observation);
+  // CONSERVATIVE: a tap that starts another app's activity can leave the session app focused for
+  // about 150 ms after the tap returns, so a single read passes the escape. A press that stays in
+  // the app pays the whole wait. Revisit if the dispatch can report the activity launch it caused.
+  const surface = await detectAndroidEscapeSurface(session, observation, {
+    focusChangeWaitMs: 300,
+  });
   if (!surface) return undefined;
 
   if (surface.permissionDialog) {

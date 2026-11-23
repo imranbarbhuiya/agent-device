@@ -15,6 +15,7 @@ import { assertRpcOk } from './assertions.ts';
 
 type DeadlineAdbState = {
   started: () => void;
+  tapped: () => void;
   observedFill: () => void;
   signal?: AbortSignal;
   retired: boolean;
@@ -30,6 +31,17 @@ function awaitGestureAbort(signal: AbortSignal): Promise<never> {
   });
 }
 
+/**
+ * After a press's tap, its escape guard re-reads the focus on a timer for up to 300 ms. Fake time
+ * moves past that in steps, so the guard's reads run between them.
+ */
+async function stepPastPressEscapeGuard(tapped: Promise<void>): Promise<void> {
+  await tapped;
+  for (let advancedMs = 0; advancedMs < 400; advancedMs += 25) {
+    await vi.advanceTimersByTimeAsync(25);
+  }
+}
+
 function deadlineAdbInfrastructureResponse(
   args: readonly string[],
   state: DeadlineAdbState,
@@ -38,6 +50,7 @@ function deadlineAdbInfrastructureResponse(
     return { exitCode: 0, stdout: 'AGENT_DEVICE_NO_HELPER\n', stderr: '' };
   if (args[0] === 'shell' && args[1] === 'input' && args[2] === 'tap') {
     state.completedActions.push('press');
+    state.tapped();
     return { exitCode: 0, stdout: '', stderr: '' };
   }
   if (args.includes('force-stop')) {
@@ -86,6 +99,10 @@ test('routed batch install reports its deadline and does not dispatch a later st
   const started = new Promise<void>((resolve) => {
     installStarted = resolve;
   });
+  let tapped!: () => void;
+  const pressTapped = new Promise<void>((resolve) => {
+    tapped = resolve;
+  });
   let installSignal: AbortSignal | undefined;
   const actions: string[] = [];
   const daemon = await createProviderScenarioHarness({
@@ -94,6 +111,7 @@ test('routed batch install reports its deadline and does not dispatch a later st
       exec: async (args) => {
         if (args[0] === 'shell' && args[1] === 'input' && args[2] === 'tap') {
           actions.push('press');
+          tapped();
           return { exitCode: 0, stdout: '', stderr: '' };
         }
         if (args[0] === 'shell' && args[1] === 'am' && args[2] === 'start')
@@ -128,6 +146,7 @@ test('routed batch install reports its deadline and does not dispatch a later st
         { command: 'press', positionals: ['40', '50'] },
       ],
     });
+    await stepPastPressEscapeGuard(pressTapped);
     await Promise.race([
       started,
       pending.then((response) => assert.fail(JSON.stringify(response.json))),
@@ -160,12 +179,17 @@ test.each(['batch', 'replay'])(
     const injecting = new Promise<void>((resolve) => {
       started = resolve;
     });
+    let tapped!: () => void;
+    const pressTapped = new Promise<void>((resolve) => {
+      tapped = resolve;
+    });
     let observedFill!: () => void;
     const fillObservation = new Promise<void>((resolve) => {
       observedFill = resolve;
     });
     const state: DeadlineAdbState = {
       started,
+      tapped,
       observedFill,
       retired: false,
       diagnosticCaptureAfterAbort: false,
@@ -213,6 +237,7 @@ test.each(['batch', 'replay'])(
               },
             }),
       });
+      await stepPastPressEscapeGuard(pressTapped);
       await fillObservation;
       await vi.advanceTimersByTimeAsync(150);
       await Promise.race([
